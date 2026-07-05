@@ -49,6 +49,9 @@
 #include <sap_service.h>
 
 extern "C" void
+scudo_malloc_set_zero_contents(int zero_contents);
+
+extern "C" void
 RIL_onRequestComplete(RIL_Token t, RIL_Errno e, void *response, size_t responselen);
 
 extern "C" void
@@ -206,6 +209,10 @@ static UnsolResponseInfo s_unsolResponses_v[] = {
 };
 
 char * RIL_getServiceName() {
+    char* env_slot = getenv("RIL_SLOT");
+    if (env_slot) {
+        return env_slot;
+    }
     return ril_service_name;
 }
 
@@ -443,11 +450,109 @@ done:
 
 // Used for testing purpose only.
 extern "C" void RIL_setcallbacks (const RIL_RadioFunctions *callbacks) {
-    memcpy(&s_callbacks, callbacks, sizeof (RIL_RadioFunctions));
+}
+
+#include <dlfcn.h>
+#include <malloc.h>
+#include <pthread.h>
+
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static int gettid_local() {
+    return syscall(SYS_gettid);
+}
+
+extern "C" int zthread_mutex_init(pthread_mutex_t* mutex, const pthread_mutexattr_t* attr) {
+    int* ptr = (int*)mutex;
+    *ptr = 0x4000; // Just mark it as recursive, unlocked
+    return 0;
+}
+
+extern "C" int zthread_mutex_destroy(pthread_mutex_t* mutex) {
+    int* ptr = (int*)mutex;
+    *ptr = 0;
+    return 0;
+}
+
+extern "C" int zthread_mutex_lock(pthread_mutex_t* mutex) {
+    volatile int32_t* ptr = (volatile int32_t*)mutex;
+    int32_t tid = gettid_local();
+    
+    while (true) {
+        int32_t val = *ptr;
+        int32_t owner = (val >> 16) & 0xFFFF;
+        int32_t count = val & 0xFFFF;
+        
+        if (owner == 0 || owner == tid) {
+            int32_t new_count = (owner == 0) ? 1 : count + 1;
+            int32_t new_val = (tid << 16) | new_count;
+            if (__sync_bool_compare_and_swap(ptr, val, new_val)) {
+                return 0;
+            }
+        } else {
+            usleep(500); // Wait for owner to release
+        }
+    }
+}
+
+extern "C" int zthread_mutex_unlock(pthread_mutex_t* mutex) {
+    volatile int32_t* ptr = (volatile int32_t*)mutex;
+    int32_t tid = gettid_local();
+    
+    while (true) {
+        int32_t val = *ptr;
+        int32_t owner = (val >> 16) & 0xFFFF;
+        int32_t count = val & 0xFFFF;
+        
+        if (owner == tid) {
+            int32_t new_count = count - 1;
+            int32_t new_val = (new_count <= 0) ? 0x4000 : ((tid << 16) | new_count);
+            if (__sync_bool_compare_and_swap(ptr, val, new_val)) {
+                return 0;
+            }
+        } else {
+            return 0; // Ignore invalid unlock
+        }
+    }
+}
+
+extern "C" void* zalloc(size_t size) {
+    // ALOGE("zalloc called with size: %zu", size);
+    return calloc(1, size);
+}
+
+extern "C" void* zreallo(void* ptr, size_t size) {
+    // ALOGE("zreallo called with size: %zu", size);
+    if (!ptr) return calloc(1, size);
+    size_t old_size = malloc_usable_size(ptr);
+    void* new_ptr = realloc(ptr, size);
+    if (new_ptr && size > old_size) {
+        memset((char*)new_ptr + old_size, 0, size - old_size);
+    }
+    return new_ptr;
+}
+
+extern "C" void* _Zzwj(size_t size) {
+    // ALOGE("_Zzwj called with size: %zu", size);
+    return calloc(1, size);
+}
+
+extern "C" void* _Zzaj(size_t size) {
+    // ALOGE("_Zzaj called with size: %zu", size);
+    return calloc(1, size);
+}
+
+extern "C" void* _ZZSt12__node_alloc11_M_allocateERj(unsigned int& size) {
+    // ALOGE("_ZZSt12__node_alloc called with size: %u", size);
+    return calloc(1, size);
 }
 
 extern "C" void
 RIL_register (const RIL_RadioFunctions *callbacks) {
+    void (*scudo_zero)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "scudo_malloc_set_zero_contents");
+    if (scudo_zero) { scudo_zero(1); RLOGI("scudo_zero FOUND and set to 1"); }
+    else { RLOGE("scudo_zero NOT FOUND!"); }
     RLOGI("SIM_COUNT: %d", SIM_COUNT);
 
     if (callbacks == NULL) {
