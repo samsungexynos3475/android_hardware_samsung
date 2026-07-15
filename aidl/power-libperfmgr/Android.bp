@@ -33,7 +33,10 @@ cc_binary {
         "liblog",
         "libutils",
         "libbinder_ndk",
+    ],
+    static_libs: [
         "libperfmgr",
+        "libjsoncpp",
         "pixel-power-ext-V1-ndk_platform",
     ],
     srcs: [
