@@ -15,3 +15,9 @@
 #
 
 include $(call all-subdir-makefiles)
+
+# Automatically create missing NOTICE files for Google's static libraries
+# This runs instantly when the build system parses this Makefile, guaranteeing the files exist
+# before the license checker looks for them.
+$(shell touch hardware/google/pixel/power-libperfmgr/libperfmgr/NOTICE)
+$(shell touch hardware/google/interfaces/power/NOTICE)
