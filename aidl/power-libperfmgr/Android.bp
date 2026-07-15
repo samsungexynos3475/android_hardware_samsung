@@ -33,9 +33,12 @@ cc_binary {
         "liblog",
         "libutils",
         "libbinder_ndk",
-        "libperfmgr",
-        "pixel-power-ext-ndk_platform",
         "vendor.lineage.power-ndk_platform",
+    ],
+    static_libs: [
+        "libperfmgr",
+        "libjsoncpp",
+        "pixel-power-ext-ndk_platform",
     ],
     srcs: [
         "service.cpp",
