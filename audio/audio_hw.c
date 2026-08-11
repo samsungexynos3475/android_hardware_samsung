@@ -141,7 +141,10 @@ static const char * const use_case_table[AUDIO_USECASE_MAX] = {
     [USECASE_AUDIO_PLAYBACK_MULTI_CH] = "playback multi-channel",
     [USECASE_AUDIO_PLAYBACK_OFFLOAD] = "compress-offload-playback",
     [USECASE_AUDIO_PLAYBACK_DEEP_BUFFER] = "playback deep-buffer",
+    [USECASE_AUDIO_PLAYBACK_EXTRA_1] = "playback extra 1",
+    [USECASE_AUDIO_PLAYBACK_EXTRA_2] = "playback extra 2",
     [USECASE_AUDIO_CAPTURE] = "capture",
+    [USECASE_AUDIO_CAPTURE_EXTRA_1] = "capture extra 1",
     [USECASE_VOICE_CALL] = "voice-call",
 };
 
@@ -3719,13 +3722,10 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
         ALOGV("%s: offloaded output offload_info version %04x bit rate %d",
                 __func__, config->offload_info.version,
                 config->offload_info.bit_rate);
-    } else if (out->flags & (AUDIO_OUTPUT_FLAG_DEEP_BUFFER)) {
-        out->usecase = USECASE_AUDIO_PLAYBACK_DEEP_BUFFER;
+    } else if (out->flags & AUDIO_OUTPUT_FLAG_DEEP_BUFFER) {
         out->config = pcm_device_deep_buffer.config;
         out->sample_rate = out->config.rate;
-        ALOGV("%s: use AUDIO_PLAYBACK_DEEP_BUFFER",__func__);
     } else {
-        out->usecase = USECASE_AUDIO_PLAYBACK;
         out->sample_rate = out->config.rate;
     }
 
@@ -3739,14 +3739,33 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
         }
     }
 
-    /* Check if this usecase is already existing */
+    /* Assign a unique usecase ID to this stream */
     pthread_mutex_lock(&adev->lock);
-    if (get_usecase_from_id(adev, out->usecase) != NULL) {
-        ALOGE("%s: Usecase (%d) is already present", __func__, out->usecase);
+
+    if (flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) {
+        out->usecase = USECASE_AUDIO_PLAYBACK_OFFLOAD;
+    } else if (out->flags & AUDIO_OUTPUT_FLAG_DEEP_BUFFER) {
+        out->usecase = USECASE_AUDIO_PLAYBACK_DEEP_BUFFER;
+    } else {
+        if (!adev->usecase_assigned[USECASE_AUDIO_PLAYBACK]) {
+            out->usecase = USECASE_AUDIO_PLAYBACK;
+        } else if (!adev->usecase_assigned[USECASE_AUDIO_PLAYBACK_EXTRA_1]) {
+            out->usecase = USECASE_AUDIO_PLAYBACK_EXTRA_1;
+        } else if (!adev->usecase_assigned[USECASE_AUDIO_PLAYBACK_EXTRA_2]) {
+            out->usecase = USECASE_AUDIO_PLAYBACK_EXTRA_2;
+        } else {
+            out->usecase = USECASE_AUDIO_PLAYBACK_MULTI_CH;
+        }
+    }
+
+    if (adev->usecase_assigned[out->usecase] || get_usecase_from_id(adev, out->usecase) != NULL) {
+        ALOGE("%s: Usecase (%d) is already present or assigned", __func__, out->usecase);
         pthread_mutex_unlock(&adev->lock);
         ret = -EEXIST;
         goto error_open;
     }
+    
+    adev->usecase_assigned[out->usecase] = true;
     pthread_mutex_unlock(&adev->lock);
 
     out->stream.common.get_sample_rate = out_get_sample_rate;
@@ -3798,7 +3817,7 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
                                      struct audio_stream_out *stream)
 {
     struct stream_out *out = (struct stream_out *)stream;
-    (void)dev;
+    struct audio_device *adev = (struct audio_device *)dev;
 
     ALOGV("%s: enter", __func__);
     out_standby(&stream->common);
@@ -3808,6 +3827,11 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
         if (out->compr_config.codec != NULL)
             free(out->compr_config.codec);
     }
+    
+    pthread_mutex_lock(&adev->lock);
+    adev->usecase_assigned[out->usecase] = false;
+    pthread_mutex_unlock(&adev->lock);
+    
     pthread_cond_destroy(&out->cond);
     pthread_mutex_destroy(&out->lock);
     free(stream);
@@ -4099,7 +4123,23 @@ static int adev_open_input_stream(struct audio_hw_device *dev,
     in->config = pcm_profile->config;
 
     /* Update config params with the requested sample rate and channels */
-    in->usecase = USECASE_AUDIO_CAPTURE;
+    pthread_mutex_lock(&adev->lock);
+    if (!adev->usecase_assigned[USECASE_AUDIO_CAPTURE]) {
+        in->usecase = USECASE_AUDIO_CAPTURE;
+    } else {
+        in->usecase = USECASE_AUDIO_CAPTURE_EXTRA_1;
+    }
+
+    if (adev->usecase_assigned[in->usecase] || get_usecase_from_id(adev, in->usecase) != NULL) {
+        ALOGE("%s: Usecase (%d) is already present or assigned", __func__, in->usecase);
+        pthread_mutex_unlock(&adev->lock);
+        free(in);
+        return -EEXIST;
+    }
+    
+    adev->usecase_assigned[in->usecase] = true;
+    pthread_mutex_unlock(&adev->lock);
+
     in->usecase_type = usecase_type;
 
     pthread_mutex_init(&in->lock, (const pthread_mutexattr_t *) NULL);
@@ -4157,6 +4197,11 @@ static void adev_close_input_stream(struct audio_hw_device *dev,
 #endif
 
     in_standby_l(in);
+
+    pthread_mutex_lock(&adev->lock);
+    adev->usecase_assigned[in->usecase] = false;
+    pthread_mutex_unlock(&adev->lock);
+
     free(stream);
 
     pthread_mutex_unlock(&adev->lock_inputs);

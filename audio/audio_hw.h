@@ -181,9 +181,12 @@ typedef enum {
     USECASE_AUDIO_PLAYBACK_MULTI_CH,
     USECASE_AUDIO_PLAYBACK_OFFLOAD,
     USECASE_AUDIO_PLAYBACK_DEEP_BUFFER,
+    USECASE_AUDIO_PLAYBACK_EXTRA_1,
+    USECASE_AUDIO_PLAYBACK_EXTRA_2,
 
     /* Capture usecases */
     USECASE_AUDIO_CAPTURE,
+    USECASE_AUDIO_CAPTURE_EXTRA_1,
 
     USECASE_VOICE_CALL,
     AUDIO_USECASE_MAX
@@ -409,6 +412,7 @@ struct audio_device {
 
     pthread_mutex_t         lock_inputs; /* see note below on mutex acquisition order */
     amplifier_device_t      *amp;
+    bool                    usecase_assigned[AUDIO_USECASE_MAX];
 };
 
 /*
