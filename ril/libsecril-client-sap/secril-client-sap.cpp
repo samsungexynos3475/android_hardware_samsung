@@ -30,6 +30,7 @@
 #include <utils/Log.h>
 #include <android/log.h>
 #include <pthread.h>
+#include <sys/poll.h>
 #include "secril-client-sap.h"
 #include <hardware_legacy/power.h> // For wakelock
 
@@ -499,14 +500,15 @@ static void * RxReaderFunc(void *param) {
 
     ALOGD("[*] %s() b_connect=%d, maxfd=%d\n", __FUNCTION__, client_prv->b_connect, maxfd);
     while (client_prv->b_connect) {
-        FD_ZERO(&(client_prv->sock_rfds));
-
-        FD_SET(client_prv->sock, &(client_prv->sock_rfds));
-        FD_SET(client_prv->pipefd[0], &(client_prv->sock_rfds));
+        struct pollfd fds[2];
+        fds[0].fd = client_prv->sock;
+        fds[0].events = POLLIN;
+        fds[1].fd = client_prv->pipefd[0];
+        fds[1].events = POLLIN;
 
         if (DBG) ALOGD("[*] %s() b_connect=%d\n", __FUNCTION__, client_prv->b_connect);
-        if (select(maxfd, &(client_prv->sock_rfds), NULL, NULL, NULL) > 0) {
-            if (FD_ISSET(client_prv->sock, &(client_prv->sock_rfds))) {
+        if (poll(fds, 2, -1) > 0) {
+            if (fds[0].revents & POLLIN) {
                 // Read incoming data
                 for (;;) {
                     // loop until EAGAIN/EINTR, end of stream, or other error
@@ -548,7 +550,7 @@ static void * RxReaderFunc(void *param) {
                     break;
                 }
             }
-            if (FD_ISSET(client_prv->pipefd[0], &(client_prv->sock_rfds))) {
+            if (fds[1].revents & POLLIN) {
                 char end_cmd[10];
 
                 if (DBG) ALOGD("%s(): close\n", __FUNCTION__);
@@ -561,6 +563,13 @@ static void * RxReaderFunc(void *param) {
                     client_prv->sock = -1;
                     client_prv->b_connect = 0;
                 }
+            }
+        } else {
+            ALOGE("%s: poll() returned %d\n", __FUNCTION__, -errno);
+            if (client_prv->sock > 0) {
+                close(client_prv->sock);
+                client_prv->sock = -1;
+                client_prv->b_connect = 0;
             }
         }
     }
